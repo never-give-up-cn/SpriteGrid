@@ -21,6 +21,8 @@ button.del{background:#833}
 .frame-list{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0;min-height:90px}
 .frame-thumb{width:90px;height:80px;border:2px solid #444;cursor:pointer;background:#222}
 .frame-thumb.active{border-color:#6af}
+.frame-thumb.selected{border-color:#fa0}
+.ctrl button.active{background:#448;box-shadow:0 0 0 2px #6af}
 textarea{width:100%;height:220px;background:#112;color:#6e9;padding:10px;border:1px solid #346;border-radius:4px;font-family:monospace}
 .info{color:#aaa;font-size:13px}
 </style>
@@ -50,6 +52,8 @@ textarea{width:100%;height:220px;background:#112;color:#6e9;padding:10px;border:
         <button id="btnNewFrame">新增空白帧</button>
         <button id="btnCopyFrame">复制当前帧</button>
         <button id="btnDelFrame">删除当前帧</button>
+        <button id="btnMultiSelect">多选模式</button>
+        <button id="btnDeleteSelected" disabled>删除选中帧</button>
         <button id="btnClearFrame">清空当前帧画布</button>
         <button id="btnUndo">撤销 (Ctrl+Z)</button>
         <button id="btnRedo">反撤销 (Ctrl+Y)</button>
@@ -108,6 +112,8 @@ let selectedKey = 1;
 let tool = "brush"; // brush / erase
 let frames = [];
 let activeFrameIndex = 0;
+let multiSelectMode = false; // 帧列表多选模式
+let selectedFrames = new Set(); // 多选选中的帧索引
 let isDrawing = false;
 let strokeChanged = false; // 本次笔触是否真的改变了像素
 let previewTick = 0;
@@ -184,9 +190,11 @@ function pushHistory(){
 function restoreFromHistory(){
     frames = history[historyIndex].map(g=>g.map(r=>[...r]));
     if(activeFrameIndex >= frames.length) activeFrameIndex = frames.length - 1;
+    selectedFrames.clear();
     renderCanvas();
     refreshFrameList();
     updateUndoRedoButtons();
+    updateSelectionUI();
 }
 function undo(){
     if(historyIndex <= 0) return;
@@ -255,6 +263,7 @@ function refreshFrameList(){
         c.width=COL_COUNT*4;c.height=ROW_COUNT*4;
         c.className="frame-thumb";
         if(idx===getDisplayIndex()) c.classList.add("active");
+        if(multiSelectMode && selectedFrames.has(idx)) c.classList.add("selected");
         const cctx = c.getContext("2d");
         cctx.fillStyle="#222";
         cctx.fillRect(0,0,c.width,c.height);
@@ -267,6 +276,13 @@ function refreshFrameList(){
             }
         }
         c.onclick=()=>{
+            if(multiSelectMode){
+                if(selectedFrames.has(idx)) selectedFrames.delete(idx);
+                else selectedFrames.add(idx);
+                refreshFrameList();
+                updateSelectionUI();
+                return;
+            }
             activeFrameIndex = idx;
             renderCanvas();
             refreshFrameList();
@@ -332,6 +348,7 @@ document.getElementById("toolErase").onclick=()=>tool="erase";
 document.getElementById("btnNewFrame").onclick=()=>{
     frames.push(createEmptyFrame());
     activeFrameIndex = frames.length-1;
+    clearSelection();
     renderCanvas();
     refreshFrameList();
     pushHistory();
@@ -341,6 +358,7 @@ document.getElementById("btnCopyFrame").onclick=()=>{
     const copy = src.map(r=>[...r]);
     frames.splice(activeFrameIndex+1,0,copy);
     activeFrameIndex++;
+    clearSelection();
     renderCanvas();
     refreshFrameList();
     pushHistory();
@@ -349,9 +367,42 @@ document.getElementById("btnDelFrame").onclick=()=>{
     if(frames.length<=1) return alert("至少保留1帧");
     frames.splice(activeFrameIndex,1);
     if(activeFrameIndex >= frames.length) activeFrameIndex = frames.length-1;
+    clearSelection();
     renderCanvas();
     refreshFrameList();
     pushHistory();
+};
+
+// 帧多选模式与批量删除
+function updateSelectionUI(){
+    const btn = document.getElementById("btnDeleteSelected");
+    if(btn){
+        btn.disabled = selectedFrames.size === 0;
+        btn.textContent = selectedFrames.size > 0 ? `删除选中(${selectedFrames.size})` : "删除选中帧";
+    }
+}
+function clearSelection(){
+    selectedFrames.clear();
+    updateSelectionUI();
+}
+document.getElementById("btnMultiSelect").onclick = ()=>{
+    multiSelectMode = !multiSelectMode;
+    if(!multiSelectMode) clearSelection();
+    document.getElementById("btnMultiSelect").classList.toggle("active", multiSelectMode);
+    refreshFrameList();
+    updateSelectionUI();
+};
+document.getElementById("btnDeleteSelected").onclick = ()=>{
+    if(selectedFrames.size === 0) return;
+    if(frames.length - selectedFrames.size < 1) return alert("至少保留1帧");
+    pushHistory();
+    const idxs = [...selectedFrames].sort((a,b)=>b-a); // 从大到小删除，避免索引错位
+    for(const i of idxs) frames.splice(i,1);
+    if(activeFrameIndex >= frames.length) activeFrameIndex = frames.length - 1;
+    selectedFrames.clear();
+    renderCanvas();
+    refreshFrameList();
+    updateSelectionUI();
 };
 document.getElementById("btnClearFrame").onclick=()=>{
     frames[activeFrameIndex] = createEmptyFrame();
@@ -396,7 +447,7 @@ function updatePreviewBtnLabel(){
 }
 // 播放时锁定所有编辑操作（仅保留停止预览按钮）
 function setPreviewLock(locked){
-    ["toolBrush","toolErase","btnNewFrame","btnCopyFrame","btnDelFrame","btnClearFrame","btnImport","btnExport","fileInput","speedSlider"].forEach(id=>{
+    ["toolBrush","toolErase","btnNewFrame","btnCopyFrame","btnDelFrame","btnMultiSelect","btnDeleteSelected","btnClearFrame","btnImport","btnExport","fileInput","speedSlider"].forEach(id=>{
         const el = document.getElementById(id);
         if(el) el.disabled = locked;
     });
@@ -478,6 +529,7 @@ async function importStaticImage(file){
     const img = await loadImageFromFile(file);
     frames.push(imageToGrid(img));
     activeFrameIndex = frames.length - 1;
+    clearSelection();
     renderCanvas();
     refreshFrameList();
     pushHistory();
@@ -513,6 +565,7 @@ async function importGif(file){
     }
     for(const grid of grids) frames.push(grid);
     activeFrameIndex = frames.length - grids.length;
+    clearSelection();
     renderCanvas();
     refreshFrameList();
     pushHistory();
@@ -537,6 +590,7 @@ document.getElementById("fileInput").onchange = async (e)=>{
 renderCanvas();
 refreshFrameList();
 updateUndoRedoButtons();
+updateSelectionUI();
 </script>
 </body>
 </html>
