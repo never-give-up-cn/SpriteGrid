@@ -234,6 +234,18 @@ function renderCanvas(frameIndex){
     }
 }
 
+// 当前应高亮的帧：预览播放时跟随播放帧，否则跟随编辑帧
+function getDisplayIndex(){
+    return previewRunning ? previewFrameIdx : activeFrameIndex;
+}
+// 只更新帧列表的高亮框，不重建缩略图
+function updateFrameListHighlight(){
+    const box = document.getElementById("frameList");
+    for(let i=0;i<box.children.length;i++){
+        box.children[i].classList.toggle("active", i===getDisplayIndex());
+    }
+}
+
 // 更新帧缩略图列表
 function refreshFrameList(){
     const box = document.getElementById("frameList");
@@ -242,7 +254,7 @@ function refreshFrameList(){
         const c = document.createElement("canvas");
         c.width=COL_COUNT*4;c.height=ROW_COUNT*4;
         c.className="frame-thumb";
-        if(idx===activeFrameIndex) c.classList.add("active");
+        if(idx===getDisplayIndex()) c.classList.add("active");
         const cctx = c.getContext("2d");
         cctx.fillStyle="#222";
         cctx.fillRect(0,0,c.width,c.height);
@@ -371,6 +383,7 @@ function previewLoop(){
     if(previewTick >= animSpeed){
         previewTick=0;
         previewFrameIdx = (previewFrameIdx+1) % frames.length;
+        updateFrameListHighlight(); // 帧列表高亮跟随播放帧
     }
     renderCanvas(previewFrameIdx);
     requestAnimationFrame(previewLoop);
@@ -391,6 +404,7 @@ btnTogglePreview.onclick = ()=>{
         previewLoop();
     }
     updatePreviewBtnLabel();
+    updateFrameListHighlight();
 };
 
 // 撤销 / 反撤销
