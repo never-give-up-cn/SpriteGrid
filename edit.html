@@ -102,6 +102,7 @@ let tool = "brush"; // brush / erase
 let frames = [];
 let activeFrameIndex = 0;
 let isDrawing = false;
+let strokeChanged = false; // 本次笔触是否真的改变了像素
 let previewTick = 0;
 let previewFrameIdx = 0;
 let previewRunning = false;
@@ -248,59 +249,75 @@ function getGridPos(e){
 
 canvas.onmousedown = e=>{
     isDrawing=true;
+    strokeChanged=false;
     const p = getGridPos(e);
     if(!p) return;
-    pushHistory(); // 记录本次笔触前的状态
     const grid = frames[activeFrameIndex];
-    grid[p.y][p.x] = tool==="erase" ? 0 : selectedKey;
-    renderCanvas();
-    refreshFrameList();
+    const v = tool==="erase" ? 0 : selectedKey;
+    if(grid[p.y][p.x] !== v){
+        grid[p.y][p.x] = v;
+        strokeChanged = true;
+        renderCanvas();
+        refreshFrameList();
+    }
 };
 canvas.onmousemove = e=>{
     if(!isDrawing) return;
     const p = getGridPos(e);
     if(!p) return;
     const grid = frames[activeFrameIndex];
-    grid[p.y][p.x] = tool==="erase" ? 0 : selectedKey;
-    renderCanvas();
-    refreshFrameList();
+    const v = tool==="erase" ? 0 : selectedKey;
+    if(grid[p.y][p.x] !== v){
+        grid[p.y][p.x] = v;
+        strokeChanged = true;
+        renderCanvas();
+        refreshFrameList();
+    }
 };
-canvas.onmouseup = ()=>isDrawing=false;
-canvas.onmouseleave = ()=>isDrawing=false;
+// 笔触结束时记录"完成后"的状态，这样撤销一步正好回到上一笔的结果
+function commitStroke(){
+    isDrawing=false;
+    if(strokeChanged){
+        strokeChanged=false;
+        pushHistory();
+    }
+}
+canvas.onmouseup = commitStroke;
+canvas.onmouseleave = commitStroke;
 
 // 按钮事件
 document.getElementById("toolBrush").onclick=()=>tool="brush";
 document.getElementById("toolErase").onclick=()=>tool="erase";
 
 document.getElementById("btnNewFrame").onclick=()=>{
-    pushHistory();
     frames.push(createEmptyFrame());
     activeFrameIndex = frames.length-1;
     renderCanvas();
     refreshFrameList();
+    pushHistory();
 };
 document.getElementById("btnCopyFrame").onclick=()=>{
-    pushHistory();
     const src = frames[activeFrameIndex];
     const copy = src.map(r=>[...r]);
     frames.splice(activeFrameIndex+1,0,copy);
     activeFrameIndex++;
     renderCanvas();
     refreshFrameList();
+    pushHistory();
 };
 document.getElementById("btnDelFrame").onclick=()=>{
     if(frames.length<=1) return alert("至少保留1帧");
-    pushHistory();
     frames.splice(activeFrameIndex,1);
     if(activeFrameIndex >= frames.length) activeFrameIndex = frames.length-1;
     renderCanvas();
     refreshFrameList();
+    pushHistory();
 };
 document.getElementById("btnClearFrame").onclick=()=>{
-    pushHistory();
     frames[activeFrameIndex] = createEmptyFrame();
     renderCanvas();
     refreshFrameList();
+    pushHistory();
 };
 
 // 导出数组
