@@ -287,6 +287,7 @@ function getGridPos(e){
 }
 
 canvas.onmousedown = e=>{
+    if(previewRunning) return; // 播放中禁止绘制
     isDrawing=true;
     strokeChanged=false;
     const p = getGridPos(e);
@@ -393,15 +394,29 @@ const btnTogglePreview = document.getElementById("btnTogglePreview");
 function updatePreviewBtnLabel(){
     btnTogglePreview.textContent = previewRunning ? "停止预览" : "播放预览";
 }
+// 播放时锁定所有编辑操作（仅保留停止预览按钮）
+function setPreviewLock(locked){
+    ["toolBrush","toolErase","btnNewFrame","btnCopyFrame","btnDelFrame","btnClearFrame","btnImport","btnExport","fileInput","speedSlider"].forEach(id=>{
+        const el = document.getElementById(id);
+        if(el) el.disabled = locked;
+    });
+    document.getElementById("btnUndo").disabled = locked || historyIndex <= 0;
+    document.getElementById("btnRedo").disabled = locked || historyIndex >= history.length - 1;
+    ["frameList","paletteBox","drawCanvas"].forEach(id=>{
+        document.getElementById(id).style.pointerEvents = locked ? "none" : "";
+    });
+}
 btnTogglePreview.onclick = ()=>{
     if(previewRunning){
         previewRunning = false;
         renderCanvas();
+        setPreviewLock(false);
     } else {
         previewFrameIdx = 0;
         previewTick = 0;
         previewRunning = true;
         previewLoop();
+        setPreviewLock(true);
     }
     updatePreviewBtnLabel();
     updateFrameListHighlight();
@@ -411,6 +426,7 @@ btnTogglePreview.onclick = ()=>{
 document.getElementById("btnUndo").onclick = undo;
 document.getElementById("btnRedo").onclick = redo;
 document.addEventListener("keydown", e=>{
+    if(previewRunning) return; // 播放中禁用快捷键操作
     if(!(e.ctrlKey || e.metaKey)) return;
     const k = e.key.toLowerCase();
     if(k === "z"){
