@@ -54,6 +54,8 @@ textarea{width:100%;height:220px;background:#112;color:#6e9;padding:10px;border:
         <button id="btnClearFrame">清空当前帧画布</button>
         <button id="btnUndo">撤销 (Ctrl+Z)</button>
         <button id="btnRedo">反撤销 (Ctrl+Y)</button>
+        <button id="btnImport">导入图片/GIF</button>
+        <input type="file" id="fileInput" accept="image/*" style="display:none">
         <button id="btnExport">导出 walkFrames 数组</button>
     </div>
 
@@ -65,6 +67,7 @@ textarea{width:100%;height:220px;background:#112;color:#6e9;padding:10px;border:
     <textarea id="outputCode" readonly placeholder="导出的JS数组会显示在这里，可以直接复制到你的项目"></textarea>
 </div>
 
+<script src="lib/gifuct-js.js"></script>
 <script>
 // ========== 和你项目完全一致的配置 ==========
 const COL_COUNT = 24;
@@ -83,6 +86,11 @@ const colorToKey = {};
 Object.entries(colorMap).forEach(([k, c])=>{
     if(c) colorToKey[c] = Number(k);
 });
+
+// 颜色解析：单元格可以是固定编号(数字)，也可以是直接存储的颜色值(#rrggbb)
+function colorOf(cell){
+    return typeof cell === "string" ? cell : colorMap[cell];
+}
 
 // 调色板选项
 const paletteList = [
@@ -131,6 +139,26 @@ paletteList.forEach(item=>{
     };
     paletteBox.appendChild(div);
 });
+
+// 自定义取色器：支持任意颜色（导入图片的原色也是这种直接存颜色值的格子）
+const customWrap = document.createElement("div");
+customWrap.className = "color-item";
+customWrap.style.position = "relative";
+customWrap.style.overflow = "hidden";
+customWrap.style.background = "conic-gradient(#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)";
+customWrap.title = "自定义颜色";
+const colorInput = document.createElement("input");
+colorInput.type = "color";
+colorInput.value = "#ffbc88";
+colorInput.style.cssText = "position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;border:0;padding:0;margin:0";
+customWrap.appendChild(colorInput);
+colorInput.oninput = ()=>{
+    selectedKey = colorInput.value;
+    tool = "brush";
+    document.querySelectorAll(".color-item").forEach(e=>e.classList.remove("active"));
+    customWrap.classList.add("active");
+};
+paletteBox.appendChild(customWrap);
 
 // 创建空白帧数据
 function createEmptyFrame(){
@@ -201,7 +229,7 @@ function renderCanvas(frameIndex){
         for(let x=0;x<COL_COUNT;x++){
             const k = grid[y][x];
             if(k===0) continue;
-            ctx.fillStyle = colorMap[k];
+            ctx.fillStyle = colorOf(k);
             ctx.fillRect(x*CELL_SIZE+1,y*CELL_SIZE+1,CELL_SIZE-2,CELL_SIZE-2);
         }
     }
@@ -223,7 +251,7 @@ function refreshFrameList(){
             for(let x=0;x<COL_COUNT;x++){
                 const k = f[y][x];
                 if(k===0) continue;
-                cctx.fillStyle = colorMap[k];
+                cctx.fillStyle = colorOf(k);
                 cctx.fillRect(x*4,y*4,4,4);
             }
         }
@@ -320,10 +348,11 @@ document.getElementById("btnClearFrame").onclick=()=>{
     pushHistory();
 };
 
-// 导出数组
+// 导出数组（颜色值字符串需加引号，数字编号原样输出）
 document.getElementById("btnExport").onclick=()=>{
+    const cellStr = c => typeof c === "string" ? `"${c}"` : c;
     const strArr = frames.map(frame=>{
-        const rows = frame.map(r=>`[${r.join(",")}]`);
+        const rows = frame.map(r=>`[${r.map(cellStr).join(",")}]`);
         return `const walk${frames.indexOf(frame)} = [\n${rows.join(",\n")}\n];`
     });
     const walkFramesCode = `const walkFrames = [\n${frames.map((_,i)=>`walk${i}`).join(",\n")}\n];`;
@@ -373,6 +402,101 @@ document.addEventListener("keydown", e=>{
         redo();
     }
 });
+
+// ========== 导入图片 / GIF ==========
+function loadImageFromFile(file){
+    return new Promise((resolve, reject)=>{
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = ()=>{ resolve(img); URL.revokeObjectURL(url); };
+        img.onerror = ()=>{ reject(new Error("图片加载失败")); URL.revokeObjectURL(url); };
+        img.src = url;
+    });
+}
+function rgbToHex(r, g, b){
+    const h = n => n.toString(16).padStart(2, "0");
+    return "#" + h(r) + h(g) + h(b);
+}
+// 把任意 Image/Canvas 缩放到 24x22，逐格取色（透明视为空）
+function imageToGrid(img){
+    const c = document.createElement("canvas");
+    c.width = COL_COUNT; c.height = ROW_COUNT;
+    const cctx = c.getContext("2d");
+    cctx.imageSmoothingEnabled = true;
+    cctx.imageSmoothingQuality = "high";
+    cctx.drawImage(img, 0, 0, COL_COUNT, ROW_COUNT);
+    const data = cctx.getImageData(0, 0, COL_COUNT, ROW_COUNT).data;
+    const grid = [];
+    for(let y=0;y<ROW_COUNT;y++){
+        const row = [];
+        for(let x=0;x<COL_COUNT;x++){
+            const i = (y*COL_COUNT + x) * 4;
+            if(data[i+3] < 128){ row.push(0); continue; }
+            row.push(rgbToHex(data[i], data[i+1], data[i+2]));
+        }
+        grid.push(row);
+    }
+    return grid;
+}
+// 静态图片 -> 追加一帧
+async function importStaticImage(file){
+    const img = await loadImageFromFile(file);
+    frames.push(imageToGrid(img));
+    activeFrameIndex = frames.length - 1;
+    renderCanvas();
+    refreshFrameList();
+    pushHistory();
+}
+// GIF -> 逐帧合成后追加为多帧
+async function importGif(file){
+    const buf = await file.arrayBuffer();
+    const parsed = GIFuct.parseGIF(buf);
+    const gifFrames = GIFuct.decompressFrames(parsed, true);
+    if(!gifFrames.length){ alert("该 GIF 没有可用的帧"); return; }
+    const w = parsed.lsd.width, h = parsed.lsd.height;
+    const g = document.createElement("canvas");
+    g.width = w; g.height = h;
+    const gctx = g.getContext("2d");
+    const grids = [];
+    let prevDisposal = 0, prevSnap = null;
+    for(const f of gifFrames){
+        if(prevDisposal === 2){
+            gctx.clearRect(0, 0, w, h);              // 上一帧要求恢复背景
+        } else if(prevDisposal === 3 && prevSnap){
+            gctx.clearRect(0, 0, w, h);
+            gctx.drawImage(prevSnap, 0, 0);          // 上一帧要求恢复原帧
+        }
+        const id = gctx.createImageData(f.dims.width, f.dims.height);
+        id.data.set(f.patch);
+        gctx.putImageData(id, f.dims.left, f.dims.top);
+        const snap = document.createElement("canvas");
+        snap.width = w; snap.height = h;
+        snap.getContext("2d").drawImage(g, 0, 0);
+        prevSnap = snap;
+        grids.push(imageToGrid(snap));
+        prevDisposal = f.disposalType;
+    }
+    for(const grid of grids) frames.push(grid);
+    activeFrameIndex = frames.length - grids.length;
+    renderCanvas();
+    refreshFrameList();
+    pushHistory();
+}
+document.getElementById("btnImport").onclick = ()=>document.getElementById("fileInput").click();
+document.getElementById("fileInput").onchange = async (e)=>{
+    const file = e.target.files[0];
+    if(!file) return;
+    try{
+        if(file.type === "image/gif" || /\.gif$/i.test(file.name)){
+            await importGif(file);
+        } else {
+            await importStaticImage(file);
+        }
+    }catch(err){
+        alert("导入失败：" + err.message);
+    }
+    e.target.value = ""; // 允许再次选择同一文件
+};
 
 // 启动
 renderCanvas();
