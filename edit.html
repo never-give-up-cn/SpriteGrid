@@ -284,8 +284,10 @@ function previewLoop(){
     requestAnimationFrame(previewLoop);
 }
 document.getElementById("btnPlayPreview").onclick=()=>{
+    previewFrameIdx = 0;
+    previewTick = 0;
+    if(previewRunning) return; // 已在播放：仅重置到第0帧，避免重复启动循环导致加速
     previewRunning=true;
-    previewTick=0;previewFrameIdx=0;
     previewLoop();
 };
 document.getElementById("btnStopPreview").onclick=()=>{
