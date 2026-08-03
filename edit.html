@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>像素小人帧编辑器</title>
+<style>
+*{box-sizing:border-box;font-family:system-ui}
+body{background:#141418;color:#eee;padding:16px;margin:0}
+.wrap{max-width:1200px;margin:0 auto}
+.top-bar{display:flex;gap:16px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+.canvas-box{border:1px solid #444;background:#222;display:inline-block}
+canvas{image-rendering:pixelated;cursor:crosshair}
+.palette{display:flex;gap:8px;align-items:center}
+.color-item{width:36px;height:36px;border:2px solid transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff;text-shadow:1px 1px #000}
+.color-item.active{border:2px solid #fff}
+.ctrl{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}
+button{padding:6px 12px;background:#336;border:0;color:#fff;border-radius:4px;cursor:pointer}
+button:hover{background:#448}
+button.del{background:#833}
+.frames-area{margin-top:20px;border-top:1px solid #333;padding-top:16px}
+.frame-list{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0;min-height:90px}
+.frame-thumb{width:90px;height:80px;border:2px solid #444;cursor:pointer;background:#222}
+.frame-thumb.active{border-color:#6af}
+textarea{width:100%;height:220px;background:#112;color:#6e9;padding:10px;border:1px solid #346;border-radius:4px;font-family:monospace}
+.info{color:#aaa;font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+    <div class="top-bar">
+        <div class="palette" id="paletteBox"></div>
+        <div>
+            <button id="toolBrush">画笔</button>
+            <button id="toolErase">橡皮擦(0号)</button>
+        </div>
+        <div>
+            <span>动画速度:</span>
+            <input type="range" id="speedSlider" min="2" max="30" value="10">
+            <span id="speedText">10</span> tick/帧
+        </div>
+        <button id="btnPlayPreview">播放预览</button>
+        <button id="btnStopPreview">停止预览</button>
+    </div>
+
+    <div class="canvas-box">
+        <canvas id="drawCanvas" width="576" height="528"></canvas>
+    </div>
+    <div class="info">画布尺寸：24列 × 22行（和你原始代码数组匹配，一格=24px）鼠标拖拽绘制</div>
+
+    <div class="ctrl">
+        <button id="btnNewFrame">新增空白帧</button>
+        <button id="btnCopyFrame">复制当前帧</button>
+        <button id="btnDelFrame">删除当前帧</button>
+        <button id="btnClearFrame">清空当前帧画布</button>
+        <button id="btnExport">导出 walkFrames 数组</button>
+    </div>
+
+    <div class="frames-area">
+        <h4>帧列表（点击切换编辑）</h4>
+        <div class="frame-list" id="frameList"></div>
+    </div>
+
+    <textarea id="outputCode" readonly placeholder="导出的JS数组会显示在这里，可以直接复制到你的项目"></textarea>
+</div>
+
+<script>
+// ========== 和你项目完全一致的配置 ==========
+const COL_COUNT = 24;
+const ROW_COUNT = 22;
+const CELL_SIZE = 24;
+const colorMap = {
+    0: null,
+    1: "#ffbc88",
+    2: "#3488ff",
+    3: "#222222",
+    4: "#28aa58",
+    9: "#ffffff"
+};
+// 反向映射：颜色 => 编号
+const colorToKey = {};
+Object.entries(colorMap).forEach(([k, c])=>{
+    if(c) colorToKey[c] = Number(k);
+});
+
+// 调色板选项
+const paletteList = [
+    {key:0, label:"0空", color:"#1a1a1a"},
+    {key:1, label:"1肤色", color:"#ffbc88"},
+    {key:2, label:"2蓝衣", color:"#3488ff"},
+    {key:3, label:"3黑", color:"#222222"},
+    {key:4, label:"4绿裤", color:"#28aa58"},
+    {key:9, label:"9眼白", color:"#ffffff"},
+];
+
+// 全局状态
+const canvas = document.getElementById("drawCanvas");
+const ctx = canvas.getContext("2d");
+let selectedKey = 1;
+let tool = "brush"; // brush / erase
+let frames = [];
+let activeFrameIndex = 0;
+let isDrawing = false;
+let previewTick = 0;
+let previewFrameIdx = 0;
+let previewRunning = false;
+const speedSlider = document.getElementById("speedSlider");
+let animSpeed = Number(speedSlider.value);
+
+// 初始化调色板
+const paletteBox = document.getElementById("paletteBox");
+paletteList.forEach(item=>{
+    const div = document.createElement("div");
+    div.className = "color-item";
+    div.style.background = item.color;
+    div.textContent = item.label;
+    div.dataset.key = item.key;
+    if(item.key === selectedKey) div.classList.add("active");
+    div.onclick = ()=>{
+        document.querySelectorAll(".color-item").forEach(e=>e.classList.remove("active"));
+        div.classList.add("active");
+        selectedKey = Number(item.key);
+        tool = "brush";
+        document.getElementById("toolBrush").classList.add("active");
+    };
+    paletteBox.appendChild(div);
+});
+
+// 创建空白帧数据
+function createEmptyFrame(){
+    const grid = [];
+    for(let y=0;y<ROW_COUNT;y++){
+        const row = [];
+        for(let x=0;x<COL_COUNT;x++) row.push(0);
+        grid.push(row);
+    }
+    return grid;
+}
+
+// 初始化默认4帧（对应你原来walk0~walk3）
+frames.push(createEmptyFrame());
+frames.push(createEmptyFrame());
+frames.push(createEmptyFrame());
+frames.push(createEmptyFrame());
+
+// 渲染画布
+function renderCanvas(){
+    const grid = frames[activeFrameIndex];
+    ctx.fillStyle="#222";
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    // 网格线
+    ctx.strokeStyle="#333";
+    ctx.lineWidth=1;
+    for(let x=0;x<=COL_COUNT;x++) ctx.beginPath(),ctx.moveTo(x*CELL_SIZE,0),ctx.lineTo(x*CELL_SIZE,canvas.height),ctx.stroke();
+    for(let y=0;y<=ROW_COUNT;y++) ctx.beginPath(),ctx.moveTo(0,y*CELL_SIZE),ctx.lineTo(canvas.width,y*CELL_SIZE),ctx.stroke();
+
+    // 绘制像素
+    for(let y=0;y<ROW_COUNT;y++){
+        for(let x=0;x<COL_COUNT;x++){
+            const k = grid[y][x];
+            if(k===0) continue;
+            ctx.fillStyle = colorMap[k];
+            ctx.fillRect(x*CELL_SIZE+1,y*CELL_SIZE+1,CELL_SIZE-2,CELL_SIZE-2);
+        }
+    }
+}
+
+// 更新帧缩略图列表
+function refreshFrameList(){
+    const box = document.getElementById("frameList");
+    box.innerHTML = "";
+    frames.forEach((f,idx)=>{
+        const c = document.createElement("canvas");
+        c.width=COL_COUNT*4;c.height=ROW_COUNT*4;
+        c.className="frame-thumb";
+        if(idx===activeFrameIndex) c.classList.add("active");
+        const cctx = c.getContext("2d");
+        cctx.fillStyle="#222";
+        cctx.fillRect(0,0,c.width,c.height);
+        for(let y=0;y<ROW_COUNT;y++){
+            for(let x=0;x<COL_COUNT;x++){
+                const k = f[y][x];
+                if(k===0) continue;
+                cctx.fillStyle = colorMap[k];
+                cctx.fillRect(x*4,y*4,4,4);
+            }
+        }
+        c.onclick=()=>{
+            activeFrameIndex = idx;
+            renderCanvas();
+            refreshFrameList();
+        };
+        box.appendChild(c);
+    });
+}
+
+// 鼠标坐标转网格
+function getGridPos(e){
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const x = Math.floor(mx / CELL_SIZE);
+    const y = Math.floor(my / CELL_SIZE);
+    if(x<0||x>=COL_COUNT||y<0||y>=ROW_COUNT) return null;
+    return {x,y};
+}
+
+canvas.onmousedown = e=>{
+    isDrawing=true;
+    const p = getGridPos(e);
+    if(!p) return;
+    const grid = frames[activeFrameIndex];
+    grid[p.y][p.x] = tool==="erase" ? 0 : selectedKey;
+    renderCanvas();
+    refreshFrameList();
+};
+canvas.onmousemove = e=>{
+    if(!isDrawing) return;
+    const p = getGridPos(e);
+    if(!p) return;
+    const grid = frames[activeFrameIndex];
+    grid[p.y][p.x] = tool==="erase" ? 0 : selectedKey;
+    renderCanvas();
+    refreshFrameList();
+};
+canvas.onmouseup = ()=>isDrawing=false;
+canvas.onmouseleave = ()=>isDrawing=false;
+
+// 按钮事件
+document.getElementById("toolBrush").onclick=()=>tool="brush";
+document.getElementById("toolErase").onclick=()=>tool="erase";
+
+document.getElementById("btnNewFrame").onclick=()=>{
+    frames.push(createEmptyFrame());
+    activeFrameIndex = frames.length-1;
+    renderCanvas();
+    refreshFrameList();
+};
+document.getElementById("btnCopyFrame").onclick=()=>{
+    const src = frames[activeFrameIndex];
+    const copy = src.map(r=>[...r]);
+    frames.splice(activeFrameIndex+1,0,copy);
+    activeFrameIndex++;
+    renderCanvas();
+    refreshFrameList();
+};
+document.getElementById("btnDelFrame").onclick=()=>{
+    if(frames.length<=1) return alert("至少保留1帧");
+    frames.splice(activeFrameIndex,1);
+    if(activeFrameIndex >= frames.length) activeFrameIndex = frames.length-1;
+    renderCanvas();
+    refreshFrameList();
+};
+document.getElementById("btnClearFrame").onclick=()=>{
+    frames[activeFrameIndex] = createEmptyFrame();
+    renderCanvas();
+    refreshFrameList();
+};
+
+// 导出数组
+document.getElementById("btnExport").onclick=()=>{
+    const strArr = frames.map(frame=>{
+        const rows = frame.map(r=>`[${r.join(",")}]`);
+        return `const walk${frames.indexOf(frame)} = [\n${rows.join(",\n")}\n];`
+    });
+    const walkFramesCode = `const walkFrames = [\n${frames.map((_,i)=>`walk${i}`).join(",\n")}\n];`;
+    const full = strArr.join("\n\n") + "\n\n" + walkFramesCode;
+    document.getElementById("outputCode").value = full;
+};
+
+speedSlider.oninput = ()=>{
+    animSpeed = Number(speedSlider.value);
+    document.getElementById("speedText").textContent = animSpeed;
+};
+
+// 动画预览
+function previewLoop(){
+    if(!previewRunning) return;
+    previewTick++;
+    if(previewTick >= animSpeed){
+        previewTick=0;
+        previewFrameIdx = (previewFrameIdx+1) % frames.length;
+        frames[previewFrameIdx];
+    }
+    renderCanvas();
+    requestAnimationFrame(previewLoop);
+}
+document.getElementById("btnPlayPreview").onclick=()=>{
+    previewRunning=true;
+    previewTick=0;previewFrameIdx=0;
+    previewLoop();
+};
+document.getElementById("btnStopPreview").onclick=()=>{
+    previewRunning=false;
+    renderCanvas();
+};
+
+// 启动
+renderCanvas();
+refreshFrameList();
+</script>
+</body>
+</html>
