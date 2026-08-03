@@ -142,9 +142,9 @@ frames.push(createEmptyFrame());
 frames.push(createEmptyFrame());
 frames.push(createEmptyFrame());
 
-// 渲染画布
-function renderCanvas(){
-    const grid = frames[activeFrameIndex];
+// 渲染画布（frameIndex 可选：不传则渲染当前编辑帧）
+function renderCanvas(frameIndex){
+    const grid = frames[frameIndex === undefined ? activeFrameIndex : frameIndex];
     ctx.fillStyle="#222";
     ctx.fillRect(0,0,canvas.width,canvas.height);
     // 网格线
@@ -279,9 +279,8 @@ function previewLoop(){
     if(previewTick >= animSpeed){
         previewTick=0;
         previewFrameIdx = (previewFrameIdx+1) % frames.length;
-        frames[previewFrameIdx];
     }
-    renderCanvas();
+    renderCanvas(previewFrameIdx);
     requestAnimationFrame(previewLoop);
 }
 document.getElementById("btnPlayPreview").onclick=()=>{
