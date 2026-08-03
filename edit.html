@@ -38,8 +38,7 @@ textarea{width:100%;height:220px;background:#112;color:#6e9;padding:10px;border:
             <input type="range" id="speedSlider" min="2" max="30" value="10">
             <span id="speedText">10</span> tick/帧
         </div>
-        <button id="btnPlayPreview">播放预览</button>
-        <button id="btnStopPreview">停止预览</button>
+        <button id="btnTogglePreview">播放预览</button>
     </div>
 
     <div class="canvas-box">
@@ -376,16 +375,22 @@ function previewLoop(){
     renderCanvas(previewFrameIdx);
     requestAnimationFrame(previewLoop);
 }
-document.getElementById("btnPlayPreview").onclick=()=>{
-    previewFrameIdx = 0;
-    previewTick = 0;
-    if(previewRunning) return; // 已在播放：仅重置到第0帧，避免重复启动循环导致加速
-    previewRunning=true;
-    previewLoop();
-};
-document.getElementById("btnStopPreview").onclick=()=>{
-    previewRunning=false;
-    renderCanvas();
+// 播放 / 停止合并为一个切换按钮
+const btnTogglePreview = document.getElementById("btnTogglePreview");
+function updatePreviewBtnLabel(){
+    btnTogglePreview.textContent = previewRunning ? "停止预览" : "播放预览";
+}
+btnTogglePreview.onclick = ()=>{
+    if(previewRunning){
+        previewRunning = false;
+        renderCanvas();
+    } else {
+        previewFrameIdx = 0;
+        previewTick = 0;
+        previewRunning = true;
+        previewLoop();
+    }
+    updatePreviewBtnLabel();
 };
 
 // 撤销 / 反撤销
