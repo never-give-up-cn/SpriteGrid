@@ -34,6 +34,8 @@ textarea{width:100%;height:220px;background:#112;color:#6e9;padding:10px;border:
 .ws-item .ws-name{max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ws-del{color:#f77;cursor:pointer;padding:0 4px;border-radius:3px}
 .ws-del:hover{background:#f77;color:#141418}
+.preset-area{margin-top:20px;border-top:1px solid #333;padding-top:16px}
+.preset-head{display:flex;gap:10px;align-items:center;margin-bottom:8px}
 </style>
 </head>
 <body>
@@ -59,6 +61,18 @@ textarea{width:100%;height:220px;background:#112;color:#6e9;padding:10px;border:
             <span class="info">导入图片/GIF 会新建工作区，当前工作区自动存入历史列表，点击历史项可切换回</span>
         </div>
         <div class="ws-list" id="workspaceList"></div>
+    </div>
+
+    <div class="preset-area">
+        <div class="preset-head">
+            <b>预设（人物1）</b>
+            <button id="btnPickPresetDir">选择预设文件夹</button>
+            <button id="btnLoadPresetFiles" style="display:none">加载预设文件</button>
+            <input type="file" id="presetFileInput" accept=".json,application/json" multiple style="display:none">
+            <button id="btnSavePreset">保存当前为预设</button>
+            <span class="info">选择 presets/人物1/ 文件夹后，预设以 JSON 文件保存在磁盘，每个动作一个文件（idle/walk/run/attack/hurt/jump/death），点击即可切换</span>
+        </div>
+        <div class="ws-list" id="presetList"></div>
     </div>
 
     <div class="canvas-box">
@@ -270,6 +284,7 @@ function startNewWorkspace(name, initialFrames){
     updateUndoRedoButtons();
     updateSelectionUI();
     refreshWorkspaceList();
+    refreshPresetList();
     saveState();
 }
 // 切换到某个历史工作区（当前工作区自动换回历史列表，互不丢失）
@@ -289,6 +304,7 @@ function switchToWorkspace(entry){
     updateUndoRedoButtons();
     updateSelectionUI();
     refreshWorkspaceList();
+    refreshPresetList();
     saveState();
 }
 function deleteWorkspaceEntry(entry){
@@ -605,13 +621,13 @@ function updatePreviewBtnLabel(){
 }
 // 播放时锁定所有编辑操作（仅保留停止预览按钮）
 function setPreviewLock(locked){
-    ["toolBrush","toolErase","btnNewFrame","btnCopyFrame","btnDelFrame","btnMultiSelect","btnDeleteSelected","btnClearFrame","btnImport","btnExport","btnImportArray","btnNewWorkspace","fileInput","speedSlider"].forEach(id=>{
+    ["toolBrush","toolErase","btnNewFrame","btnCopyFrame","btnDelFrame","btnMultiSelect","btnDeleteSelected","btnClearFrame","btnImport","btnExport","btnImportArray","btnNewWorkspace","btnPickPresetDir","btnLoadPresetFiles","btnSavePreset","fileInput","presetFileInput","speedSlider"].forEach(id=>{
         const el = document.getElementById(id);
         if(el) el.disabled = locked;
     });
     document.getElementById("btnUndo").disabled = locked || historyIndex <= 0;
     document.getElementById("btnRedo").disabled = locked || historyIndex >= history.length - 1;
-    ["frameList","paletteBox","drawCanvas","workspaceList"].forEach(id=>{
+    ["frameList","paletteBox","drawCanvas","workspaceList","presetList"].forEach(id=>{
         document.getElementById(id).style.pointerEvents = locked ? "none" : "";
     });
 }
@@ -770,10 +786,14 @@ function parseFramesFromCode(text){
         if(!m2) throw new Error("未找到数组数据");
         arr = new Function("return " + m2[0] + ";")();
     }
+    // 校验尺寸并深拷贝（单帧 / 多帧自动区分）
+    return normalizeFrames(arr);
+}
+// 把任意数组规整为合法的帧列表（自动区分单帧 [[…行…]] 与多帧 [[[…帧…]]]）
+function normalizeFrames(arr){
     if(!Array.isArray(arr) || !arr.length) throw new Error("数组为空");
     const isFrameList = Array.isArray(arr[0]) && Array.isArray(arr[0][0]);
     const rawFrames = isFrameList ? arr : [arr];
-    // 校验尺寸并深拷贝
     return rawFrames.map((grid, fi)=>{
         if(!Array.isArray(grid) || grid.length !== ROW_COUNT)
             throw new Error("第 " + (fi+1) + " 帧行数不是 " + ROW_COUNT);
@@ -795,6 +815,166 @@ document.getElementById("btnImportArray").onclick = ()=>{
         alert("数组解析失败：" + err.message);
     }
 };
+
+// ========== 预设：人物动作 JSON（保存在磁盘文件夹中） ==========
+// 主路径：File System Access API（Chrome/Edge）—— 选择 presets/人物1/ 文件夹后，预设直接读写磁盘
+// 兜底路径：不支持该 API 时，保存=下载 JSON 文件，加载=多选导入
+const PRESET_EXT = ".json";
+const PRESET_CHARACTER = "人物1";
+let presetDirHandle = null;   // FileSystemDirectoryHandle（用户选择的预设文件夹）
+let presetFiles = [];         // [{name, fileHandle}] 当前文件夹下的预设清单
+
+function hasDirPicker(){ return typeof window.showDirectoryPicker === "function"; }
+
+// 从 JSON 对象提取帧列表（兼容 {frames:[…]} 或直接数组）
+function framesFromPresetJson(obj){
+    const arr = Array.isArray(obj) ? obj : (obj && obj.frames);
+    if(!arr) throw new Error("JSON 中没有 frames 数组");
+    return normalizeFrames(arr);
+}
+// 渲染预设列表（列出预设文件夹里的 .json，高亮当前工作区对应的预设）
+async function refreshPresetList(){
+    const box = document.getElementById("presetList");
+    box.innerHTML = "";
+    presetFiles = [];
+    if(!presetDirHandle){
+        const tip = document.createElement("span");
+        tip.className = "info";
+        tip.textContent = "未选择文件夹 —— 点击「选择预设文件夹」选到 presets/人物1/，这里会列出全部预设";
+        box.appendChild(tip);
+        return;
+    }
+    const jsonFiles = [];
+    for await (const entry of presetDirHandle.values()){
+        if(entry.kind === "file" && entry.name.toLowerCase().endsWith(PRESET_EXT)) jsonFiles.push(entry);
+    }
+    jsonFiles.sort((a,b)=>a.name.localeCompare(b.name));
+    if(!jsonFiles.length){
+        const tip = document.createElement("span");
+        tip.className = "info";
+        tip.textContent = "该文件夹暂无预设，点「保存当前为预设」创建第一个（如 idle.json）";
+        box.appendChild(tip);
+        return;
+    }
+    for(const fh of jsonFiles){
+        const name = fh.name.slice(0, -PRESET_EXT.length);
+        presetFiles.push({name, fileHandle: fh});
+        const chip = document.createElement("div");
+        chip.className = "ws-item";
+        if(name === currentWorkspace.name) chip.classList.add("current");
+        chip.title = "切换到预设「" + name + "」";
+        const label = document.createElement("span");
+        label.className = "ws-name";
+        label.textContent = name;
+        label.onclick = ()=>switchToPreset(name);
+        const del = document.createElement("span");
+        del.className = "ws-del";
+        del.textContent = "×";
+        del.title = "删除预设文件 " + fh.name;
+        del.onclick = e=>{
+            e.stopPropagation();
+            deletePreset(name);
+        };
+        chip.appendChild(label);
+        chip.appendChild(del);
+        box.appendChild(chip);
+    }
+}
+// 加载一个预设：读取 JSON -> 解析帧 -> 切换为新工作区
+async function switchToPreset(name){
+    const item = presetFiles.find(f=>f.name === name);
+    if(!item) return;
+    try{
+        const f = await item.fileHandle.getFile();
+        const obj = JSON.parse(await f.text());
+        const frames = framesFromPresetJson(obj);
+        startNewWorkspace(name, frames);
+    }catch(err){
+        alert("加载预设失败：" + err.message);
+    }
+}
+// 删除磁盘上的预设文件
+async function deletePreset(name){
+    const item = presetFiles.find(f=>f.name === name);
+    if(!item) return;
+    if(!confirm("删除预设文件 " + item.fileHandle.name + "？")) return;
+    try{
+        await presetDirHandle.removeEntry(item.fileHandle.name);
+        await refreshPresetList();
+    }catch(err){
+        alert("删除失败：" + err.message);
+    }
+}
+// 生成预设 JSON 内容
+function presetJsonOf(name){
+    return { character: PRESET_CHARACTER, action: name, frames };
+}
+// 兜底：不支持目录 API 时，保存=下载 JSON 文件
+function downloadJson(filename, obj){
+    const blob = new Blob([JSON.stringify(obj, null, 2)], {type: "application/json"});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+}
+// 保存当前工作区为预设
+document.getElementById("btnSavePreset").onclick = async ()=>{
+    const name = (prompt("输入动作名（如 idle / walk / run / attack / hurt / jump / death），将保存为「动作名" + PRESET_EXT + "」") || "").trim();
+    if(!name) return;
+    if(!/^[\w一-龥-]+$/.test(name)) return alert("动作名只能包含字母、数字、下划线、中文和连字符");
+    if(presetDirHandle){
+        try{
+            if(presetFiles.some(f=>f.name === name)){
+                if(!confirm("预设 " + name + PRESET_EXT + " 已存在，覆盖它？")) return;
+            }
+            const fh = await presetDirHandle.getFileHandle(name + PRESET_EXT, {create: true});
+            const w = await fh.createWritable();
+            await w.write(JSON.stringify(presetJsonOf(name), null, 2));
+            await w.close();
+            await refreshPresetList();
+            alert("已保存预设：" + name + PRESET_EXT);
+        }catch(err){
+            alert("保存失败：" + err.message);
+        }
+    }else{
+        downloadJson(name + PRESET_EXT, presetJsonOf(name));
+        alert("已下载 " + name + ".json，请把它放入 presets/" + PRESET_CHARACTER + "/ 文件夹");
+    }
+};
+// 选择预设文件夹（File System Access API）
+document.getElementById("btnPickPresetDir").onclick = async ()=>{
+    if(!hasDirPicker()) return;
+    try{
+        presetDirHandle = await window.showDirectoryPicker();
+        await refreshPresetList();
+    }catch(err){
+        if(err.name !== "AbortError") alert("选择文件夹失败：" + err.message);
+    }
+};
+// 兜底：加载预设文件（多选 .json）
+document.getElementById("btnLoadPresetFiles").onclick = ()=>document.getElementById("presetFileInput").click();
+document.getElementById("presetFileInput").onchange = async (e)=>{
+    const files = [...e.target.files];
+    if(!files.length) return;
+    try{
+        for(const file of files){
+            const obj = JSON.parse(await file.text());
+            const frames = framesFromPresetJson(obj);
+            const name = (file.name || "").replace(/\.json$/i, "");
+            startNewWorkspace(name, frames);
+        }
+        alert("已导入 " + files.length + " 个预设文件，最后一个成为当前工作区");
+    }catch(err){
+        alert("预设加载失败：" + err.message);
+    }
+    e.target.value = "";
+};
+// 不支持目录 API 时：隐藏目录按钮，改用文件导入
+if(!hasDirPicker()){
+    document.getElementById("btnPickPresetDir").style.display = "none";
+    document.getElementById("btnLoadPresetFiles").style.display = "";
+}
 
 document.getElementById("btnImport").onclick = ()=>document.getElementById("fileInput").click();
 document.getElementById("fileInput").onchange = async (e)=>{
@@ -818,6 +998,7 @@ refreshFrameList();
 updateUndoRedoButtons();
 updateSelectionUI();
 refreshWorkspaceList();
+refreshPresetList();
 window.addEventListener("beforeunload", saveState);
 </script>
 </body>
