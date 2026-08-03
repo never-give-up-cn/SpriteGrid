@@ -52,6 +52,8 @@ textarea{width:100%;height:220px;background:#112;color:#6e9;padding:10px;border:
         <button id="btnCopyFrame">复制当前帧</button>
         <button id="btnDelFrame">删除当前帧</button>
         <button id="btnClearFrame">清空当前帧画布</button>
+        <button id="btnUndo">撤销 (Ctrl+Z)</button>
+        <button id="btnRedo">反撤销 (Ctrl+Y)</button>
         <button id="btnExport">导出 walkFrames 数组</button>
     </div>
 
@@ -103,6 +105,10 @@ let isDrawing = false;
 let previewTick = 0;
 let previewFrameIdx = 0;
 let previewRunning = false;
+// 撤销 / 反撤销
+const HISTORY_LIMIT = 100;
+let history = [];
+let historyIndex = -1;
 const speedSlider = document.getElementById("speedSlider");
 let animSpeed = Number(speedSlider.value);
 
@@ -136,11 +142,47 @@ function createEmptyFrame(){
     return grid;
 }
 
+// ========== 撤销 / 反撤销 ==========
+// 记录当前 frames 的完整快照，供撤销使用
+function pushHistory(){
+    // 丢弃被反撤销操作覆盖掉的历史尾部
+    history = history.slice(0, historyIndex + 1);
+    history.push(frames.map(f=>f.map(r=>[...r])));
+    if(history.length > HISTORY_LIMIT) history.shift();
+    historyIndex = history.length - 1;
+    updateUndoRedoButtons();
+}
+// 用历史快照恢复 frames
+function restoreFromHistory(){
+    frames = history[historyIndex].map(g=>g.map(r=>[...r]));
+    if(activeFrameIndex >= frames.length) activeFrameIndex = frames.length - 1;
+    renderCanvas();
+    refreshFrameList();
+    updateUndoRedoButtons();
+}
+function undo(){
+    if(historyIndex <= 0) return;
+    historyIndex--;
+    restoreFromHistory();
+}
+function redo(){
+    if(historyIndex >= history.length - 1) return;
+    historyIndex++;
+    restoreFromHistory();
+}
+function updateUndoRedoButtons(){
+    const und = document.getElementById("btnUndo");
+    const red = document.getElementById("btnRedo");
+    if(und) und.disabled = (historyIndex <= 0);
+    if(red) red.disabled = (historyIndex >= history.length - 1);
+}
+
 // 初始化默认4帧（对应你原来walk0~walk3）
 frames.push(createEmptyFrame());
 frames.push(createEmptyFrame());
 frames.push(createEmptyFrame());
 frames.push(createEmptyFrame());
+pushHistory();
 
 // 渲染画布（frameIndex 可选：不传则渲染当前编辑帧）
 function renderCanvas(frameIndex){
@@ -208,6 +250,7 @@ canvas.onmousedown = e=>{
     isDrawing=true;
     const p = getGridPos(e);
     if(!p) return;
+    pushHistory(); // 记录本次笔触前的状态
     const grid = frames[activeFrameIndex];
     grid[p.y][p.x] = tool==="erase" ? 0 : selectedKey;
     renderCanvas();
@@ -230,12 +273,14 @@ document.getElementById("toolBrush").onclick=()=>tool="brush";
 document.getElementById("toolErase").onclick=()=>tool="erase";
 
 document.getElementById("btnNewFrame").onclick=()=>{
+    pushHistory();
     frames.push(createEmptyFrame());
     activeFrameIndex = frames.length-1;
     renderCanvas();
     refreshFrameList();
 };
 document.getElementById("btnCopyFrame").onclick=()=>{
+    pushHistory();
     const src = frames[activeFrameIndex];
     const copy = src.map(r=>[...r]);
     frames.splice(activeFrameIndex+1,0,copy);
@@ -245,12 +290,14 @@ document.getElementById("btnCopyFrame").onclick=()=>{
 };
 document.getElementById("btnDelFrame").onclick=()=>{
     if(frames.length<=1) return alert("至少保留1帧");
+    pushHistory();
     frames.splice(activeFrameIndex,1);
     if(activeFrameIndex >= frames.length) activeFrameIndex = frames.length-1;
     renderCanvas();
     refreshFrameList();
 };
 document.getElementById("btnClearFrame").onclick=()=>{
+    pushHistory();
     frames[activeFrameIndex] = createEmptyFrame();
     renderCanvas();
     refreshFrameList();
@@ -295,9 +342,25 @@ document.getElementById("btnStopPreview").onclick=()=>{
     renderCanvas();
 };
 
+// 撤销 / 反撤销
+document.getElementById("btnUndo").onclick = undo;
+document.getElementById("btnRedo").onclick = redo;
+document.addEventListener("keydown", e=>{
+    if(!(e.ctrlKey || e.metaKey)) return;
+    const k = e.key.toLowerCase();
+    if(k === "z"){
+        e.preventDefault();
+        if(e.shiftKey) redo(); else undo();
+    } else if(k === "y"){
+        e.preventDefault();
+        redo();
+    }
+});
+
 // 启动
 renderCanvas();
 refreshFrameList();
+updateUndoRedoButtons();
 </script>
 </body>
 </html>
