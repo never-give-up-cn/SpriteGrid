@@ -78,6 +78,7 @@ textarea{width:100%;height:220px;background:#112;color:#6e9;padding:10px;border:
         <button id="btnImport">导入图片/GIF</button>
         <input type="file" id="fileInput" accept="image/*" style="display:none">
         <button id="btnExport">导出 walkFrames 数组</button>
+        <button id="btnImportArray">导入数组</button>
     </div>
 
     <div class="frames-area">
@@ -85,7 +86,7 @@ textarea{width:100%;height:220px;background:#112;color:#6e9;padding:10px;border:
         <div class="frame-list" id="frameList"></div>
     </div>
 
-    <textarea id="outputCode" readonly placeholder="导出的JS数组会显示在这里，可以直接复制到你的项目"></textarea>
+    <textarea id="outputCode" placeholder="导出和导入共用：点「导出」生成 JS 数组；把 walkFrames 数组代码（或 JSON）粘贴到这里，点「导入数组」可自动填充为序列帧"></textarea>
 </div>
 
 <script src="lib/gifuct-js.js"></script>
@@ -604,7 +605,7 @@ function updatePreviewBtnLabel(){
 }
 // 播放时锁定所有编辑操作（仅保留停止预览按钮）
 function setPreviewLock(locked){
-    ["toolBrush","toolErase","btnNewFrame","btnCopyFrame","btnDelFrame","btnMultiSelect","btnDeleteSelected","btnClearFrame","btnImport","btnExport","btnNewWorkspace","fileInput","speedSlider"].forEach(id=>{
+    ["toolBrush","toolErase","btnNewFrame","btnCopyFrame","btnDelFrame","btnMultiSelect","btnDeleteSelected","btnClearFrame","btnImport","btnExport","btnImportArray","btnNewWorkspace","fileInput","speedSlider"].forEach(id=>{
         const el = document.getElementById(id);
         if(el) el.disabled = locked;
     });
@@ -727,6 +728,74 @@ async function importGif(file){
     }
     startNewWorkspace(workspaceNameFromFile(file), grids);
 }
+// ========== 导入数组（粘贴 walkFrames 代码 / JSON，自动填充为序列帧） ==========
+// 从 startIdx 起提取配对的顶层数组字面量（跳过字符串与嵌套），返回 "[...]"
+function extractArrayLiteral(text, startIdx){
+    let depth = 0, inStr = false, strCh = "";
+    for(let i = startIdx; i < text.length; i++){
+        const ch = text[i];
+        if(inStr){
+            if(ch === "\\") i++;
+            else if(ch === strCh) inStr = false;
+            continue;
+        }
+        if(ch === '"' || ch === "'" || ch === "`"){ inStr = true; strCh = ch; continue; }
+        if(ch === "[") depth++;
+        else if(ch === "]"){ depth--; if(depth === 0) return text.slice(startIdx, i + 1); }
+    }
+    return null;
+}
+// 解析数组代码 -> 帧列表
+// 支持：1) 本工具导出的 const walk0=…; const walkFrames=[walk0,…]; 2) 直接粘贴 JSON / 数组字面量
+// 单帧 [[…22行×24列…]] 与多帧 [[[…帧…],…]] 自动区分
+function parseFramesFromCode(text){
+    const decls = {};
+    const re = /\b(?:const|let|var)\s+(\w+)\s*=\s*/g;
+    let m;
+    while((m = re.exec(text))){
+        const lit = extractArrayLiteral(text, m.index + m[0].length);
+        if(!lit) break;
+        decls[m[1]] = lit;
+        re.lastIndex = m.index + m[0].length + lit.length; // 跳过整个数组，避免误匹配数组内部的 const 字样
+    }
+    let arr;
+    const names = Object.keys(decls);
+    if(names.length){
+        // 先求值所有声明，再取 walkFrames（没有则取第一个声明）
+        const scope = names.map(n => "const " + n + "=" + decls[n] + ";").join("");
+        const target = decls.walkFrames !== undefined ? "walkFrames" : names[0];
+        arr = new Function(scope + "return " + target + ";")();
+    }else{
+        const m2 = text.match(/\[[\s\S]*\]/);
+        if(!m2) throw new Error("未找到数组数据");
+        arr = new Function("return " + m2[0] + ";")();
+    }
+    if(!Array.isArray(arr) || !arr.length) throw new Error("数组为空");
+    const isFrameList = Array.isArray(arr[0]) && Array.isArray(arr[0][0]);
+    const rawFrames = isFrameList ? arr : [arr];
+    // 校验尺寸并深拷贝
+    return rawFrames.map((grid, fi)=>{
+        if(!Array.isArray(grid) || grid.length !== ROW_COUNT)
+            throw new Error("第 " + (fi+1) + " 帧行数不是 " + ROW_COUNT);
+        return grid.map((row, ri)=>{
+            if(!Array.isArray(row) || row.length !== COL_COUNT)
+                throw new Error("第 " + (fi+1) + " 帧第 " + (ri+1) + " 行列数不是 " + COL_COUNT);
+            return [...row];
+        });
+    });
+}
+document.getElementById("btnImportArray").onclick = ()=>{
+    const text = document.getElementById("outputCode").value.trim();
+    if(!text) return alert("请先在上方文本框粘贴数组代码（可直接粘贴之前导出的内容）");
+    try{
+        const frames = parseFramesFromCode(text);
+        startNewWorkspace("数组导入", frames);
+        alert("已导入 " + frames.length + " 帧，当前工作区已切换为「数组导入」");
+    }catch(err){
+        alert("数组解析失败：" + err.message);
+    }
+};
+
 document.getElementById("btnImport").onclick = ()=>document.getElementById("fileInput").click();
 document.getElementById("fileInput").onchange = async (e)=>{
     const file = e.target.files[0];
