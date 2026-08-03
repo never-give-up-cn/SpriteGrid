@@ -25,6 +25,15 @@ button.del{background:#833}
 .ctrl button.active{background:#448;box-shadow:0 0 0 2px #6af}
 textarea{width:100%;height:220px;background:#112;color:#6e9;padding:10px;border:1px solid #346;border-radius:4px;font-family:monospace}
 .info{color:#aaa;font-size:13px}
+.ws-area{margin:0 0 14px;padding-bottom:12px;border-bottom:1px solid #333}
+.ws-head{display:flex;gap:10px;align-items:center;margin-bottom:8px}
+.ws-list{display:flex;gap:8px;flex-wrap:wrap}
+.ws-item{display:inline-flex;align-items:center;gap:6px;padding:5px 12px;background:#222;border:1px solid #444;border-radius:16px;font-size:13px;cursor:pointer}
+.ws-item:hover{border-color:#6af}
+.ws-item.current{border-color:#6af;background:#1c2f44;font-weight:600;cursor:default}
+.ws-item .ws-name{max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ws-del{color:#f77;cursor:pointer;padding:0 4px;border-radius:3px}
+.ws-del:hover{background:#f77;color:#141418}
 </style>
 </head>
 <body>
@@ -41,6 +50,15 @@ textarea{width:100%;height:220px;background:#112;color:#6e9;padding:10px;border:
             <span id="speedText">10</span> tick/帧
         </div>
         <button id="btnTogglePreview">播放预览</button>
+    </div>
+
+    <div class="ws-area">
+        <div class="ws-head">
+            <b>工作区历史</b>
+            <button id="btnNewWorkspace">新建工作区</button>
+            <span class="info">导入图片/GIF 会新建工作区，当前工作区自动存入历史列表，点击历史项可切换回</span>
+        </div>
+        <div class="ws-list" id="workspaceList"></div>
     </div>
 
     <div class="canvas-box">
@@ -125,6 +143,14 @@ let history = [];
 let historyIndex = -1;
 const speedSlider = document.getElementById("speedSlider");
 let animSpeed = Number(speedSlider.value);
+
+// ========== 工作区历史 ==========
+// 当前工作区的实时状态就是全局 frames/history/activeFrameIndex；
+// 新建或切换工作区时，把当前工作区深拷贝快照存入历史列表
+const WS_STORAGE_KEY = "pixelEditorWorkspaces";
+let workspaceIdSeq = 1;
+let currentWorkspace = null; // {id, name}
+let workspaceHistory = [];   // 已保存的历史工作区（与当前工作区同构的快照）
 
 // 初始化调色板
 const paletteBox = document.getElementById("paletteBox");
@@ -213,12 +239,142 @@ function updateUndoRedoButtons(){
     if(red) red.disabled = (historyIndex >= history.length - 1);
 }
 
-// 初始化默认4帧（对应你原来walk0~walk3）
-frames.push(createEmptyFrame());
-frames.push(createEmptyFrame());
-frames.push(createEmptyFrame());
-frames.push(createEmptyFrame());
-pushHistory();
+// ========== 工作区历史 ==========
+// 深拷贝一份当前工作区快照（与历史条目同构）
+function captureCurrentWorkspace(){
+    return {
+        id: currentWorkspace.id,
+        name: currentWorkspace.name,
+        frames: frames.map(f=>f.map(r=>[...r])),
+        activeFrameIndex,
+        history: history.map(s=>s.map(f=>f.map(r=>[...r]))),
+        historyIndex
+    };
+}
+function makeDefaultFrames(){ return [createEmptyFrame(),createEmptyFrame(),createEmptyFrame(),createEmptyFrame()]; }
+// 新建一个工作区：把当前工作区存入历史列表
+function startNewWorkspace(name, initialFrames){
+    workspaceHistory.unshift(captureCurrentWorkspace());
+    if(workspaceHistory.length > 20) workspaceHistory.pop();
+    currentWorkspace = { id: "ws-" + (workspaceIdSeq++), name: name || ("工作区 " + workspaceIdSeq) };
+    frames = initialFrames ? initialFrames.map(f=>f.map(r=>[...r])) : makeDefaultFrames();
+    activeFrameIndex = 0;
+    history = [];
+    historyIndex = -1;
+    clearSelection();
+    stopPreview();
+    pushHistory(); // 记录初始状态，撤销可回到空白
+    renderCanvas();
+    refreshFrameList();
+    updateUndoRedoButtons();
+    updateSelectionUI();
+    refreshWorkspaceList();
+    saveState();
+}
+// 切换到某个历史工作区（当前工作区自动换回历史列表，互不丢失）
+function switchToWorkspace(entry){
+    if(entry.id === currentWorkspace.id) return;
+    workspaceHistory = workspaceHistory.filter(w=>w !== entry);
+    workspaceHistory.unshift(captureCurrentWorkspace());
+    currentWorkspace = { id: entry.id, name: entry.name };
+    frames = entry.frames.map(f=>f.map(r=>[...r]));
+    history = entry.history.map(s=>s.map(f=>f.map(r=>[...r])));
+    historyIndex = entry.historyIndex;
+    activeFrameIndex = entry.activeFrameIndex;
+    clearSelection();
+    stopPreview();
+    renderCanvas();
+    refreshFrameList();
+    updateUndoRedoButtons();
+    updateSelectionUI();
+    refreshWorkspaceList();
+    saveState();
+}
+function deleteWorkspaceEntry(entry){
+    workspaceHistory = workspaceHistory.filter(w=>w !== entry);
+    refreshWorkspaceList();
+    saveState();
+}
+// 渲染工作区历史列表
+function refreshWorkspaceList(){
+    const box = document.getElementById("workspaceList");
+    box.innerHTML = "";
+    const cur = document.createElement("div");
+    cur.className = "ws-item current";
+    cur.title = "当前工作区";
+    const curName = document.createElement("span");
+    curName.className = "ws-name";
+    curName.textContent = currentWorkspace ? currentWorkspace.name : "工作区 1";
+    cur.appendChild(curName);
+    box.appendChild(cur);
+    workspaceHistory.forEach(entry=>{
+        const chip = document.createElement("div");
+        chip.className = "ws-item";
+        const label = document.createElement("span");
+        label.className = "ws-name";
+        label.textContent = entry.name;
+        label.title = "切换到「" + entry.name + "」";
+        label.onclick = ()=>switchToWorkspace(entry);
+        const del = document.createElement("span");
+        del.className = "ws-del";
+        del.textContent = "×";
+        del.title = "删除此历史工作区";
+        del.onclick = e=>{
+            e.stopPropagation();
+            if(confirm("删除历史工作区「" + entry.name + "」？")) deleteWorkspaceEntry(entry);
+        };
+        chip.appendChild(label);
+        chip.appendChild(del);
+        box.appendChild(chip);
+    });
+}
+
+// ========== 工作区持久化（localStorage） ==========
+function saveState(){
+    try{
+        const saved = { current: captureCurrentWorkspace(), history: workspaceHistory };
+        if(workspaceHistory.length > 20) saved.history = workspaceHistory.slice(0, 20);
+        localStorage.setItem(WS_STORAGE_KEY, JSON.stringify(saved));
+    }catch(e){ /* 存储失败忽略 */ }
+}
+function restoreState(){
+    try{
+        const raw = localStorage.getItem(WS_STORAGE_KEY);
+        if(!raw) return false;
+        const saved = JSON.parse(raw);
+        if(!saved || !saved.current || !Array.isArray(saved.current.frames)) return false;
+        currentWorkspace = { id: saved.current.id, name: saved.current.name };
+        frames = saved.current.frames.map(f=>f.map(r=>[...r]));
+        history = (saved.current.history||[]).map(s=>s.map(f=>f.map(r=>[...r])));
+        historyIndex = saved.current.historyIndex;
+        activeFrameIndex = saved.current.activeFrameIndex || 0;
+        workspaceHistory = (saved.history||[]).map(h=>({
+            id: h.id, name: h.name,
+            frames: h.frames.map(f=>f.map(r=>[...r])),
+            history: (h.history||[]).map(s=>s.map(f=>f.map(r=>[...r]))),
+            historyIndex: h.historyIndex,
+            activeFrameIndex: h.activeFrameIndex||0
+        }));
+        if(history.length && historyIndex < 0) historyIndex = 0;
+        if(historyIndex >= history.length) historyIndex = history.length - 1;
+        if(activeFrameIndex >= frames.length) activeFrameIndex = frames.length - 1;
+        let maxId = 0;
+        [currentWorkspace, ...workspaceHistory].forEach(w=>{
+            const n = Number(String(w.id||"").replace("ws-",""));
+            if(!isNaN(n) && n > maxId) maxId = n;
+        });
+        workspaceIdSeq = maxId + 1;
+        return true;
+    }catch(e){ return false; }
+}
+
+// 初始化默认工作区：4个空白帧（对应你原来walk0~walk3）；
+// 若 localStorage 里保存过上次的工作区，则直接恢复
+if(!restoreState()){
+    currentWorkspace = { id: "ws-" + (workspaceIdSeq++), name: "工作区 1" };
+    frames = makeDefaultFrames();
+    pushHistory();
+}
 
 // 渲染画布（frameIndex 可选：不传则渲染当前编辑帧）
 function renderCanvas(frameIndex){
@@ -410,6 +566,7 @@ document.getElementById("btnClearFrame").onclick=()=>{
     refreshFrameList();
     pushHistory();
 };
+document.getElementById("btnNewWorkspace").onclick=()=>startNewWorkspace(null, makeDefaultFrames());
 
 // 导出数组（颜色值字符串需加引号，数字编号原样输出）
 document.getElementById("btnExport").onclick=()=>{
@@ -447,30 +604,36 @@ function updatePreviewBtnLabel(){
 }
 // 播放时锁定所有编辑操作（仅保留停止预览按钮）
 function setPreviewLock(locked){
-    ["toolBrush","toolErase","btnNewFrame","btnCopyFrame","btnDelFrame","btnMultiSelect","btnDeleteSelected","btnClearFrame","btnImport","btnExport","fileInput","speedSlider"].forEach(id=>{
+    ["toolBrush","toolErase","btnNewFrame","btnCopyFrame","btnDelFrame","btnMultiSelect","btnDeleteSelected","btnClearFrame","btnImport","btnExport","btnNewWorkspace","fileInput","speedSlider"].forEach(id=>{
         const el = document.getElementById(id);
         if(el) el.disabled = locked;
     });
     document.getElementById("btnUndo").disabled = locked || historyIndex <= 0;
     document.getElementById("btnRedo").disabled = locked || historyIndex >= history.length - 1;
-    ["frameList","paletteBox","drawCanvas"].forEach(id=>{
+    ["frameList","paletteBox","drawCanvas","workspaceList"].forEach(id=>{
         document.getElementById(id).style.pointerEvents = locked ? "none" : "";
     });
 }
+function stopPreview(){
+    if(!previewRunning) return;
+    previewRunning = false;
+    renderCanvas();
+    setPreviewLock(false);
+    updatePreviewBtnLabel();
+    updateFrameListHighlight();
+}
 btnTogglePreview.onclick = ()=>{
     if(previewRunning){
-        previewRunning = false;
-        renderCanvas();
-        setPreviewLock(false);
+        stopPreview();
     } else {
         previewFrameIdx = 0;
         previewTick = 0;
         previewRunning = true;
         previewLoop();
         setPreviewLock(true);
+        updatePreviewBtnLabel();
+        updateFrameListHighlight();
     }
-    updatePreviewBtnLabel();
-    updateFrameListHighlight();
 };
 
 // 撤销 / 反撤销
@@ -525,14 +688,13 @@ function imageToGrid(img){
     return grid;
 }
 // 静态图片 -> 追加一帧
+function workspaceNameFromFile(file){
+    const n = (file.name || "").replace(/\.[^.\/]+$/, "").trim();
+    return n || "导入工作区";
+}
 async function importStaticImage(file){
     const img = await loadImageFromFile(file);
-    frames.push(imageToGrid(img));
-    activeFrameIndex = frames.length - 1;
-    clearSelection();
-    renderCanvas();
-    refreshFrameList();
-    pushHistory();
+    startNewWorkspace(workspaceNameFromFile(file), [imageToGrid(img)]);
 }
 // GIF -> 逐帧合成后追加为多帧
 async function importGif(file){
@@ -563,12 +725,7 @@ async function importGif(file){
         grids.push(imageToGrid(snap));
         prevDisposal = f.disposalType;
     }
-    for(const grid of grids) frames.push(grid);
-    activeFrameIndex = frames.length - grids.length;
-    clearSelection();
-    renderCanvas();
-    refreshFrameList();
-    pushHistory();
+    startNewWorkspace(workspaceNameFromFile(file), grids);
 }
 document.getElementById("btnImport").onclick = ()=>document.getElementById("fileInput").click();
 document.getElementById("fileInput").onchange = async (e)=>{
@@ -591,6 +748,8 @@ renderCanvas();
 refreshFrameList();
 updateUndoRedoButtons();
 updateSelectionUI();
+refreshWorkspaceList();
+window.addEventListener("beforeunload", saveState);
 </script>
 </body>
 </html>
